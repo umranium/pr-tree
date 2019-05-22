@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 #
-import concurrent
+import os
 from concurrent.futures.thread import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from os import getcwd
-from time import time
 from typing import Iterator, List, Optional, Tuple
 
 from git import Repo, Commit
@@ -12,6 +11,10 @@ from github import Repository, PullRequest, PullRequestPart, Branch
 from github.AuthenticatedUser import AuthenticatedUser
 from github.MainClass import Github
 from plumbum import cli, local
+
+GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
+if not GITHUB_TOKEN:
+    raise Exception("GitHub token not specified in environment. Please set GITHUB_TOKEN")
 
 
 @dataclass
@@ -50,14 +53,7 @@ class TreeNode:
 
 class GitChain(cli.Application):
     __no_rebase_on_root = False
-    __github: Github = None
-
-    @cli.autoswitch(str, mandatory=True)
-    def github_token(self, token: str):
-        """
-        Github token (needs to be able to read repositories)
-        """
-        self.__github = Github(token)
+    __github: Github = Github(GITHUB_TOKEN)
 
     @cli.autoswitch(bool)
     def no_rebase_on_root(self, value: bool):
