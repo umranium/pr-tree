@@ -4,14 +4,13 @@ import os
 from concurrent.futures.thread import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from os import getcwd
-from typing import Iterator, List, Optional, Tuple, Iterable, Callable
+from typing import Iterator, List, Optional, Tuple, Iterable, Dict
 
 from git import Repo, Commit
 from github import Repository, PullRequest, PullRequestPart, Branch, Issue
 from github.AuthenticatedUser import AuthenticatedUser
 from github.MainClass import Github
 from plumbum import cli, local
-from plumbum.cli import switch
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 if not GITHUB_TOKEN:
@@ -23,6 +22,12 @@ class PrInfo:
     pr_number: int
     head_branch_name: str
     base_branch_name: str
+
+
+@dataclass
+class ReviewerState:
+    reviewer: str
+    state: str
 
 
 @dataclass
@@ -63,7 +68,7 @@ class Remote:
             "", type="pr", state="open", author=user.login, repo=repo.full_name)
         pr_numbers: List[int] = [issue.number for issue in issues]
 
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        with ThreadPoolExecutor() as executor:
             prs: List[PullRequest] = executor.map(repo.get_pull, pr_numbers)
 
         for pr in prs:
@@ -87,6 +92,30 @@ class Remote:
         commit: Commit = branch.commit
         return commit.sha
 
+    def __get_single_pr_reviewer_state(self, repo: Repository, pr_number: int) -> List[ReviewerState]:
+        pull: PullRequest = repo.get_pull(pr_number)
+        _, data = repo._requester.requestJsonAndCheck(
+            "GET",
+            repo.url + "/pulls/" + str(pr_number)
+        )
+        reviews = list(pull.get_reviews())
+        reviewer_states = []
+        for requested_reviewer in data["requested_reviewers"]:
+            login = requested_reviewer["login"]
+            states = [review.state for review in reviews if review.user.login == login]
+            if not states:
+                reviewer_states.append(ReviewerState(reviewer=login, state="pending"))
+            else:
+                reviewer_states.append(ReviewerState(reviewer=login, state=states[-1]))
+        return reviewer_states
+
+    def get_multi_pr_reviewer_states(self, repo: Repository, pr_numbers: List[int]) -> Dict[int, List[ReviewerState]]:
+        def get_pr_reviewers(pr_number: int):
+            return pr_number, self.__get_single_pr_reviewer_state(repo, pr_number)
+
+        with ThreadPoolExecutor() as executor:
+            return {k: v for k, v in executor.map(get_pr_reviewers, pr_numbers)}
+
 
 class PrTree(cli.Application):
     def main(self):
@@ -99,25 +128,32 @@ class Print(cli.Application):
     """
     Prints the user's PRs in the form of a tree, where each node is placed below it's base branch
     """
+    __remote = Remote()
+    __git = local["git"]
+    __repo: Repository
 
     def main(self):
-        remote = Remote()
-        git = local["git"]
-
-        origin: str = git("config", "--get", "remote.origin.url")
+        origin: str = self.__git("config", "--get", "remote.origin.url")
         origin = origin.strip()
 
-        user: AuthenticatedUser = remote.get_user()
+        user: AuthenticatedUser = self.__remote.get_user()
 
-        repo = remote.get_repo(user, origin)
-        if not repo:
+        self.__repo = self.__remote.get_repo(user, origin)
+        if not self.__repo:
             raise Exception("Unable to find repo for %s in your GitHub account" % origin)
 
-        prs = list(remote.get_prs(user, repo))
+        print("fetching PRs")
+        prs = list(self.__remote.get_prs(user, self.__repo))
         roots = create_tree(prs)
-        self.__print(roots)
 
-    def __print(self, roots: List[TreeNode]):
+        print("fetching reviews")
+        reviewer_states = self.__remote.get_multi_pr_reviewer_states(self.__repo,
+                                                                     [n.pr_info.pr_number
+                                                                      for n, _ in _depth_first(roots)
+                                                                      if n.pr_info])
+        self.__print(roots, reviewer_states)
+
+    def __print(self, roots: List[TreeNode], reviewer_states: Dict[int, List[ReviewerState]]):
         for node, _ in _depth_first(roots):
             parentage = _ancestry(node)
             line_segments = []
@@ -141,6 +177,9 @@ class Print(cli.Application):
             line_segments.append(node.head_branch)
             if node.pr_info:
                 line_segments.append(" [%d]" % node.pr_info.pr_number)
+                line_segments.append(" ")
+                line_segments.append(",".join("%s:%s" % (rev_state.reviewer, rev_state.state)
+                                              for rev_state in reviewer_states[node.pr_info.pr_number]))
             print("".join(line_segments))
 
 
