@@ -4,10 +4,10 @@ import os
 from concurrent.futures.thread import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from os import getcwd
-from typing import Iterator, List, Optional, Tuple
+from typing import Iterator, List, Optional, Tuple, Iterable
 
 from git import Repo, Commit
-from github import Repository, PullRequest, PullRequestPart, Branch
+from github import Repository, PullRequest, PullRequestPart, Branch, Issue
 from github.AuthenticatedUser import AuthenticatedUser
 from github.MainClass import Github
 from plumbum import cli, local
@@ -67,12 +67,15 @@ class GitChain(cli.Application):
 
         origin: str = git("config", "--get", "remote.origin.url")
         origin = origin.strip()
-        repo = self.__get_repo(origin)
+
+        user: AuthenticatedUser = self.__github.get_user()
+
+        repo = self.__get_repo(user, origin)
         if not repo:
             raise Exception("Unable to find repo for %s in your GitHub account" % origin)
 
-        prs = list(self.__get_prs(repo))
-        roots = self.__get_pr_tree(prs)
+        prs = list(self.__get_prs(user, repo))
+        roots = self.__create_tree(prs)
         self.__print(roots)
 
     def __print(self, roots: List[TreeNode]):
@@ -101,7 +104,7 @@ class GitChain(cli.Application):
                 line_segments.append(" [%d]" % node.pr_info.pr_number)
             print("".join(line_segments))
 
-    def __get_pr_tree(self, prs: List[PrInfo]) -> List[TreeNode]:
+    def __create_tree(self, prs: List[PrInfo]) -> List[TreeNode]:
         head_to_base = {}
         head_to_pr = {}
         for pr in prs:
@@ -109,16 +112,12 @@ class GitChain(cli.Application):
             head_to_pr[pr.head_branch_name] = pr
 
         def get_pr(branch: str) -> Optional[PrInfo]:
-            if branch in head_to_pr:
-                return head_to_pr[branch]
-            else:
-                return None
+            return head_to_pr[branch] if branch in head_to_pr else None
 
-        # BFS
         leafs = {
             b: TreeNode(base_node=None,
                         head_branch=b,
-                        pr_info=None)
+                        pr_info=get_pr(b))
             for _, b in head_to_base.items()
             if b not in head_to_base
         }
@@ -140,10 +139,9 @@ class GitChain(cli.Application):
 
         return roots
 
-    def __get_prs(self, repo: Repository) -> Iterator[PrInfo]:
-        user: AuthenticatedUser = self.__github.get_user()
-        login = user.login
-        issues = self.__github.search_issues("", type="pr", state="open", author=login, repo=repo.full_name)
+    def __get_prs(self, user: AuthenticatedUser, repo: Repository) -> Iterator[PrInfo]:
+        issues: Iterable[Issue] = self.__github.search_issues(
+            "", type="pr", state="open", author=user.login, repo=repo.full_name)
         pr_numbers: List[int] = [issue.number for issue in issues]
 
         with ThreadPoolExecutor(max_workers=3) as executor:
@@ -158,19 +156,17 @@ class GitChain(cli.Application):
                 base_branch_name=base.ref
             )
 
+    def __get_repo(self, user: AuthenticatedUser, git_url: str) -> Optional:
+        for repo in user.get_repos():
+            repo: Repository
+            if repo.ssh_url == git_url or repo.html_url == git_url:
+                return repo
+        return None
+
     def __remote_sha(self, repo: Repository, branch: str) -> str:
         branch: Branch = repo.get_branch(branch)
         commit: Commit = branch.commit
         return commit.sha
-
-    def __get_repo(self, git_url: str) -> Optional:
-        self.__github.get_repos()
-        user: AuthenticatedUser = self.__github.get_user()
-        for repo in user.get_repos():
-            repo: Repository
-            if repo.ssh_url == git_url:
-                return repo
-        return None
 
 
 def _depth_first(nodes: List[TreeNode]) -> Iterator[Tuple[TreeNode, int]]:
