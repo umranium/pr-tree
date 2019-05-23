@@ -4,13 +4,14 @@ import os
 from concurrent.futures.thread import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from os import getcwd
-from typing import Iterator, List, Optional, Tuple, Iterable
+from typing import Iterator, List, Optional, Tuple, Iterable, Callable
 
 from git import Repo, Commit
 from github import Repository, PullRequest, PullRequestPart, Branch, Issue
 from github.AuthenticatedUser import AuthenticatedUser
 from github.MainClass import Github
 from plumbum import cli, local
+from plumbum.cli import switch
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 if not GITHUB_TOKEN:
@@ -52,17 +53,17 @@ class TreeNode:
 
 
 class GitChain(cli.Application):
-    __no_rebase_on_root = False
     __github: Github = Github(GITHUB_TOKEN)
+    __task: Callable[[], None]
 
-    @cli.autoswitch(bool)
-    def no_rebase_on_root(self, value: bool):
-        """
-        Do not rebase onto root even if root has changed
-        """
-        self.__no_rebase_on_root = value
+    @cli.switch("print", mandatory=True)
+    def print(self):
+        self.__task = self.__print_task
 
     def main(self):
+        self.__task()
+
+    def __print_task(self):
         git = local["git"]
 
         origin: str = git("config", "--get", "remote.origin.url")
@@ -75,69 +76,8 @@ class GitChain(cli.Application):
             raise Exception("Unable to find repo for %s in your GitHub account" % origin)
 
         prs = list(self.__get_prs(user, repo))
-        roots = self.__create_tree(prs)
-        self.__print(roots)
-
-    def __print(self, roots: List[TreeNode]):
-        for node, _ in _depth_first(roots):
-            parentage = _ancestry(node)
-            line_segments = []
-            for p in parentage:
-                if p.is_last_sibling():
-                    line_segments.append(" ")
-                else:
-                    line_segments.append("│")
-            if node.is_root():
-                line_segments.append("─")
-            elif node.is_last_sibling():
-                line_segments.append("└")
-            else:
-                line_segments.append("├")
-
-            if node.has_children():
-                line_segments.append("┬ ")
-            else:
-                line_segments.append("─ ")
-
-            line_segments.append(node.head_branch)
-            if node.pr_info:
-                line_segments.append(" [%d]" % node.pr_info.pr_number)
-            print("".join(line_segments))
-
-    def __create_tree(self, prs: List[PrInfo]) -> List[TreeNode]:
-        head_to_base = {}
-        head_to_pr = {}
-        for pr in prs:
-            head_to_base[pr.head_branch_name] = pr.base_branch_name
-            head_to_pr[pr.head_branch_name] = pr
-
-        def get_pr(branch: str) -> Optional[PrInfo]:
-            return head_to_pr[branch] if branch in head_to_pr else None
-
-        leafs = {
-            b: TreeNode(base_node=None,
-                        head_branch=b,
-                        pr_info=get_pr(b))
-            for _, b in head_to_base.items()
-            if b not in head_to_base
-        }
-        roots = [v for k, v in leafs.items()]
-
-        while leafs:
-            leaf_branches = {l for l in leafs.keys()}
-            next_leafs = {}
-            for l in leaf_branches:
-                for h, b in head_to_base.items():
-                    if b == l:
-                        new_node = TreeNode(base_node=leafs[l],
-                                            head_branch=h,
-                                            pr_info=get_pr(h))
-                        next_leafs[h] = new_node
-                        leafs[l].children.append(new_node)
-
-            leafs = next_leafs
-
-        return roots
+        roots = create_tree(prs)
+        print_trees(roots)
 
     def __get_prs(self, user: AuthenticatedUser, repo: Repository) -> Iterator[PrInfo]:
         issues: Iterable[Issue] = self.__github.search_issues(
@@ -167,6 +107,69 @@ class GitChain(cli.Application):
         branch: Branch = repo.get_branch(branch)
         commit: Commit = branch.commit
         return commit.sha
+
+
+def print_trees(roots: List[TreeNode]):
+    for node, _ in _depth_first(roots):
+        parentage = _ancestry(node)
+        line_segments = []
+        for p in parentage:
+            if p.is_last_sibling():
+                line_segments.append(" ")
+            else:
+                line_segments.append("│")
+        if node.is_root():
+            line_segments.append("─")
+        elif node.is_last_sibling():
+            line_segments.append("└")
+        else:
+            line_segments.append("├")
+
+        if node.has_children():
+            line_segments.append("┬ ")
+        else:
+            line_segments.append("─ ")
+
+        line_segments.append(node.head_branch)
+        if node.pr_info:
+            line_segments.append(" [%d]" % node.pr_info.pr_number)
+        print("".join(line_segments))
+
+
+def create_tree(prs: List[PrInfo]) -> List[TreeNode]:
+    head_to_base = {}
+    head_to_pr = {}
+    for pr in prs:
+        head_to_base[pr.head_branch_name] = pr.base_branch_name
+        head_to_pr[pr.head_branch_name] = pr
+
+    def get_pr(branch: str) -> Optional[PrInfo]:
+        return head_to_pr[branch] if branch in head_to_pr else None
+
+    leafs = {
+        b: TreeNode(base_node=None,
+                    head_branch=b,
+                    pr_info=get_pr(b))
+        for _, b in head_to_base.items()
+        if b not in head_to_base
+    }
+    roots = [v for k, v in leafs.items()]
+
+    while leafs:
+        leaf_branches = {l for l in leafs.keys()}
+        next_leafs = {}
+        for l in leaf_branches:
+            for h, b in head_to_base.items():
+                if b == l:
+                    new_node = TreeNode(base_node=leafs[l],
+                                        head_branch=h,
+                                        pr_info=get_pr(h))
+                    next_leafs[h] = new_node
+                    leafs[l].children.append(new_node)
+
+        leafs = next_leafs
+
+    return roots
 
 
 def _depth_first(nodes: List[TreeNode]) -> Iterator[Tuple[TreeNode, int]]:
