@@ -7,7 +7,7 @@ from os import getcwd
 from typing import Iterator, List, Optional, Tuple, Iterable, Dict
 
 from git import Repo, Commit
-from github import Repository, PullRequest, PullRequestPart, Branch, Issue
+from github import Repository, PullRequest, PullRequestPart, Branch, Issue, PullRequestReview
 from github.AuthenticatedUser import AuthenticatedUser
 from github.MainClass import Github
 from plumbum import cli, local
@@ -98,16 +98,20 @@ class Remote:
             "GET",
             repo.url + "/pulls/" + str(pr_number)
         )
-        reviews = list(pull.get_reviews())
-        reviewer_states = []
+        reviews: List[PullRequestReview] = list(pull.get_reviews())
+        reviewer_states = {}
+        for review in reviews:
+            reviewer_states[review.user.login] = ReviewerState(reviewer=review.user.login, state=review.state)
+
         for requested_reviewer in data["requested_reviewers"]:
             login = requested_reviewer["login"]
             states = [review.state for review in reviews if review.user.login == login]
             if not states:
-                reviewer_states.append(ReviewerState(reviewer=login, state="pending"))
+                reviewer_states[login] = ReviewerState(reviewer=login, state="pending")
             else:
-                reviewer_states.append(ReviewerState(reviewer=login, state=states[-1]))
-        return reviewer_states
+                reviewer_states[login] = ReviewerState(reviewer=login, state=states[-1])
+
+        return list(reviewer_states.values())
 
     def get_multi_pr_reviewer_states(self, repo: Repository, pr_numbers: List[int]) -> Dict[int, List[ReviewerState]]:
         def get_pr_reviewers(pr_number: int):
