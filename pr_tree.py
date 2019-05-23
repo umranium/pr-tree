@@ -52,34 +52,13 @@ class TreeNode:
         return index == (sibling_count - 1)
 
 
-class GitChain(cli.Application):
+class Remote:
     __github: Github = Github(GITHUB_TOKEN)
-    __task: Callable[[], None]
 
-    @cli.switch("print", mandatory=True)
-    def print(self):
-        self.__task = self.__print_task
+    def get_user(self) -> AuthenticatedUser:
+        return self.__github.get_user()
 
-    def main(self):
-        self.__task()
-
-    def __print_task(self):
-        git = local["git"]
-
-        origin: str = git("config", "--get", "remote.origin.url")
-        origin = origin.strip()
-
-        user: AuthenticatedUser = self.__github.get_user()
-
-        repo = self.__get_repo(user, origin)
-        if not repo:
-            raise Exception("Unable to find repo for %s in your GitHub account" % origin)
-
-        prs = list(self.__get_prs(user, repo))
-        roots = create_tree(prs)
-        print_trees(roots)
-
-    def __get_prs(self, user: AuthenticatedUser, repo: Repository) -> Iterator[PrInfo]:
+    def get_prs(self, user: AuthenticatedUser, repo: Repository) -> Iterator[PrInfo]:
         issues: Iterable[Issue] = self.__github.search_issues(
             "", type="pr", state="open", author=user.login, repo=repo.full_name)
         pr_numbers: List[int] = [issue.number for issue in issues]
@@ -96,44 +75,73 @@ class GitChain(cli.Application):
                 base_branch_name=base.ref
             )
 
-    def __get_repo(self, user: AuthenticatedUser, git_url: str) -> Optional:
+    def get_repo(self, user: AuthenticatedUser, git_url: str) -> Optional['Repository']:
         for repo in user.get_repos():
             repo: Repository
             if repo.ssh_url == git_url or repo.html_url == git_url:
                 return repo
         return None
 
-    def __remote_sha(self, repo: Repository, branch: str) -> str:
+    def remote_sha(self, repo: Repository, branch: str) -> str:
         branch: Branch = repo.get_branch(branch)
         commit: Commit = branch.commit
         return commit.sha
 
 
-def print_trees(roots: List[TreeNode]):
-    for node, _ in _depth_first(roots):
-        parentage = _ancestry(node)
-        line_segments = []
-        for p in parentage:
-            if p.is_last_sibling():
-                line_segments.append(" ")
+class PrTree(cli.Application):
+    def main(self):
+        if not self.nested_command:
+            self.help()
+
+
+@PrTree.subcommand("print")
+class Print(cli.Application):
+    """
+    Prints the user's PRs in the form of a tree, where each node is placed below it's base branch
+    """
+
+    def main(self):
+        remote = Remote()
+        git = local["git"]
+
+        origin: str = git("config", "--get", "remote.origin.url")
+        origin = origin.strip()
+
+        user: AuthenticatedUser = remote.get_user()
+
+        repo = remote.get_repo(user, origin)
+        if not repo:
+            raise Exception("Unable to find repo for %s in your GitHub account" % origin)
+
+        prs = list(remote.get_prs(user, repo))
+        roots = create_tree(prs)
+        self.__print(roots)
+
+    def __print(self, roots: List[TreeNode]):
+        for node, _ in _depth_first(roots):
+            parentage = _ancestry(node)
+            line_segments = []
+            for p in parentage:
+                if p.is_last_sibling():
+                    line_segments.append(" ")
+                else:
+                    line_segments.append("│")
+            if node.is_root():
+                line_segments.append("─")
+            elif node.is_last_sibling():
+                line_segments.append("└")
             else:
-                line_segments.append("│")
-        if node.is_root():
-            line_segments.append("─")
-        elif node.is_last_sibling():
-            line_segments.append("└")
-        else:
-            line_segments.append("├")
+                line_segments.append("├")
 
-        if node.has_children():
-            line_segments.append("┬ ")
-        else:
-            line_segments.append("─ ")
+            if node.has_children():
+                line_segments.append("┬ ")
+            else:
+                line_segments.append("─ ")
 
-        line_segments.append(node.head_branch)
-        if node.pr_info:
-            line_segments.append(" [%d]" % node.pr_info.pr_number)
-        print("".join(line_segments))
+            line_segments.append(node.head_branch)
+            if node.pr_info:
+                line_segments.append(" [%d]" % node.pr_info.pr_number)
+            print("".join(line_segments))
 
 
 def create_tree(prs: List[PrInfo]) -> List[TreeNode]:
@@ -207,4 +215,4 @@ def local_sha(branch: str) -> str:
 
 
 if __name__ == '__main__':
-    GitChain.run()
+    PrTree.run()
