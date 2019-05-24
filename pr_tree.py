@@ -135,12 +135,20 @@ class UpdateDependencies(cli.Application):
     """
     __user: AuthenticatedUser
     __repo: RemoteRepo
-    __branch: str
-    __dry_run = cli.Flag("--dry-run")
+    __root: str
+    __dry_run = cli.Flag("--dry-run",
+                         help="Show sequence of steps but do not make any changes")
+    __delete = cli.Flag("--delete",
+                        help="Whether or not to delete the root branch while rebasing. "
+                             "Deleting results in the children rebasing onto the root's parent and not itself. "
+                             "Deleting has no effect if the branch is the root branch (i.e. master). ")
 
-    @switch("--branch", str, mandatory=True)
-    def branch(self, value: str):
-        self.__branch = value
+    @switch("--root", str, mandatory=True)
+    def root(self, value: str):
+        """
+        The root branch. All branches based on this branch will be rebased recursively.
+        """
+        self.__root = value
 
     # noinspection PyStatementEffect
     def main(self):
@@ -164,8 +172,10 @@ class UpdateDependencies(cli.Application):
                 continue
             base = node.base_node
             ancestor_heads = set(a.head_branch for a in ancestry)
-            if self.__branch not in ancestor_heads:
+            if self.__root not in ancestor_heads:
                 continue
+            if self.__delete and base.head_branch == self.__root and base.base_node:
+                base = base.base_node
             step = RebaseStep(base=base,
                               base_initial_local_sha=get_local_sha(base.head_branch),
                               child=node)
