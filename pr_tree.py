@@ -60,6 +60,9 @@ class PrInfo:
     def head_branch_name(self) -> str:
         return self._pr.head.ref
 
+    def head_sha(self) -> str:
+        return self._pr.head.sha
+
     def base_branch_name(self) -> str:
         return self._pr.base.ref
 
@@ -173,6 +176,11 @@ class Print(cli.Application):
 
             line_segments.append(node.head_branch)
             if node.pr_info:
+                local_differs = node.pr_info.head_sha() != get_local_sha(node.pr_info.head_branch_name())
+                if local_differs:
+                    line_segments.append(" 🌓")
+                else:
+                    line_segments.append(" 🌕")
                 line_segments.append(" [%d]" % node.pr_info.pr_number())
                 line_segments.append(" ")
                 line_segments.append(",".join("%s:%s" % (rev_state.reviewer, rev_state.to_emoji())
@@ -256,6 +264,12 @@ def _ancestry(node: TreeNode) -> List[TreeNode]:
         nodes.append(node)
         node = node.base_node
     return list(reversed(nodes))
+
+
+def get_local_sha(branch_name: str) -> str:
+    git = local["git"]
+    result: str = git("rev-parse", branch_name)
+    return result.strip()
 
 
 if __name__ == '__main__':
