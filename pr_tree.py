@@ -31,6 +31,12 @@ class RemoteRepo:
 
         return [PrInfo(self, pr) for pr in prs]
 
+    def get_owner(self) -> str:
+        return self._repo.owner.name
+
+    def get_name(self) -> str:
+        return self._repo.name
+
 
 @dataclass
 class ReviewerState:
@@ -51,7 +57,7 @@ class ReviewerState:
 
 
 class PrInfo:
-    def __init__(self, repo: Repository, pr: PullRequest):
+    def __init__(self, repo: RemoteRepo, pr: PullRequest):
         self._repo = repo
         self._pr = pr
 
@@ -93,6 +99,9 @@ class PrInfo:
             reviewer_states[login] = ReviewerState(reviewer=login, state="PENDING")
 
         return list(reviewer_states.values())
+
+    def get_link(self):
+        return "https://github.com/%s/%s/pull/%d" % (self._repo.get_owner(), self._repo.get_name(), self.pr_number())
 
 
 @dataclass
@@ -167,7 +176,11 @@ class UpdateDependencies(cli.Application):
             child: TreeNode
 
         rebase_steps: List[RebaseStep] = []
+        root_node: Optional[TreeNode] = None
+        dependencies: List[TreeNode] = []
         for node, ancestry in _depth_first(roots):
+            if node.head_branch == self.__root:
+                root_node = node
             if not node.base_node:  # can't rebase root
                 continue
             base = node.base_node
@@ -176,6 +189,7 @@ class UpdateDependencies(cli.Application):
                 continue
             if self.__delete and base.head_branch == self.__root and base.base_node:
                 base = base.base_node
+            dependencies.append(node)
             step = RebaseStep(base=base,
                               base_initial_local_sha=get_local_sha(base.head_branch),
                               child=node)
@@ -200,6 +214,11 @@ class UpdateDependencies(cli.Application):
                     print(e)
 
             git["push", "-f"] & FG
+
+        if root_node and root_node.base_node and root_node.pr_info and self.__delete:
+            print("Remaining tasks:")
+            for dep in dependencies:
+                print("Change the base of PR", dep.pr_info.get_link(), "to", root_node.base_node.head_branch)
 
 
 @PrTree.subcommand("print")
