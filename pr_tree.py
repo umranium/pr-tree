@@ -8,7 +8,8 @@ from typing import Iterator, List, Optional, Tuple, Iterable, Dict
 from github import Repository, PullRequest, Issue, PullRequestReview
 from github.AuthenticatedUser import AuthenticatedUser
 from github.MainClass import Github
-from plumbum import cli, local
+from plumbum import cli, local, FG
+from plumbum.cli import switch
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 if not GITHUB_TOKEN:
@@ -125,6 +126,68 @@ class PrTree(cli.Application):
     def main(self):
         if not self.nested_command:
             self.help()
+
+
+@PrTree.subcommand("update-dependencies")
+class UpdateDependencies(cli.Application):
+    """
+    Updates all the dependent PRs of a PR by recursively rebasing them
+    """
+    __user: AuthenticatedUser
+    __repo: RemoteRepo
+    __branch: str
+
+    @switch("--branch", str, mandatory=True)
+    def branch(self, value: str):
+        self.__branch = value
+
+    # noinspection PyStatementEffect
+    def main(self):
+        self.__user = github.get_user()
+
+        self.__repo = get_repo(self.__user)
+
+        print("fetching PRs")
+        prs = list(self.__repo.get_user_prs(self.__user))
+        roots = create_tree(prs)
+
+        @dataclass()
+        class RebaseStep:
+            base: TreeNode
+            base_initial_local_sha: str
+            child: TreeNode
+
+        rebase_steps: List[RebaseStep] = []
+        for node, _ in _depth_first(roots):
+            if not node.base_node:  # can't rebase root
+                continue
+            base = node.base_node
+            ancestors = _ancestry(node)
+            ancestor_heads = set(a.head_branch for a in ancestors)
+            if self.__branch not in ancestor_heads:
+                continue
+            step = RebaseStep(base=base,
+                              base_initial_local_sha=get_local_sha(base.head_branch),
+                              child=node)
+            rebase_steps.append(step)
+            print("rebase", node.head_branch, "onto", base.head_branch)
+
+        git = local["git"]
+        for step in rebase_steps:
+            print("Rebasing", step.child.head_branch,
+                  "onto", step.base.head_branch,
+                  "starting from", step.base_initial_local_sha)
+
+            while True:
+                try:
+                    git["rebase", "-i",
+                        "--onto", step.base.head_branch,
+                        step.base_initial_local_sha, step.child.head_branch] & FG
+                    break
+                except Exception as e:
+                    print(e)
+
+            git["push", "-f"] & FG
 
 
 @PrTree.subcommand("print")
