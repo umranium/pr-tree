@@ -320,16 +320,6 @@ def _breadth_first(nodes: List[TreeNode]) -> Iterator[Tuple[TreeNode, List[TreeN
             queue.append((n, chain + [node]))
 
 
-# Returns ancestors of node, from the oldest to it's parent
-def _ancestry(node: TreeNode) -> List[TreeNode]:
-    node = node.base_node
-    nodes = []
-    while node:
-        nodes.append(node)
-        node = node.base_node
-    return list(reversed(nodes))
-
-
 def get_local_sha(branch_name: str) -> str:
     git = local["git"]
     result: str = git("rev-parse", branch_name)
