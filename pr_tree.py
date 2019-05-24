@@ -136,6 +136,7 @@ class UpdateDependencies(cli.Application):
     __user: AuthenticatedUser
     __repo: RemoteRepo
     __branch: str
+    __dry_run = cli.Flag("--dry-run")
 
     @switch("--branch", str, mandatory=True)
     def branch(self, value: str):
@@ -158,25 +159,26 @@ class UpdateDependencies(cli.Application):
             child: TreeNode
 
         rebase_steps: List[RebaseStep] = []
-        for node, _ in _depth_first(roots):
+        for node, ancestry in _depth_first(roots):
             if not node.base_node:  # can't rebase root
                 continue
             base = node.base_node
-            ancestors = _ancestry(node)
-            ancestor_heads = set(a.head_branch for a in ancestors)
+            ancestor_heads = set(a.head_branch for a in ancestry)
             if self.__branch not in ancestor_heads:
                 continue
             step = RebaseStep(base=base,
                               base_initial_local_sha=get_local_sha(base.head_branch),
                               child=node)
             rebase_steps.append(step)
-            print("rebase", node.head_branch, "onto", base.head_branch)
 
         git = local["git"]
         for step in rebase_steps:
             print("Rebasing", step.child.head_branch,
                   "onto", step.base.head_branch,
                   "starting from", step.base_initial_local_sha)
+
+            if self.__dry_run:
+                continue
 
             while True:
                 try:
@@ -217,8 +219,7 @@ class Print(cli.Application):
         self.__print(roots, reviewer_states)
 
     def __print(self, roots: List[TreeNode], reviewer_states: Dict[int, List[ReviewerState]]):
-        for node, _ in _depth_first(roots):
-            parentage = _ancestry(node)
+        for node, parentage in _depth_first(roots):
             line_segments = []
             for p in parentage:
                 if p.is_last_sibling():
@@ -300,23 +301,23 @@ def create_tree(prs: List[PrInfo]) -> List[TreeNode]:
     return roots
 
 
-def _depth_first(nodes: List[TreeNode]) -> Iterator[Tuple[TreeNode, int]]:
-    def transverse(node: TreeNode, depth: int) -> Iterator[Tuple[TreeNode, int]]:
-        yield (node, depth)
+def _depth_first(nodes: List[TreeNode]) -> Iterator[Tuple[TreeNode, List[TreeNode]]]:
+    def transverse(node: TreeNode, chain: List[TreeNode]) -> Iterator[Tuple[TreeNode, List[TreeNode]]]:
+        yield (node, chain)
         for m in node.children:
-            yield from transverse(m, depth + 1)
+            yield from transverse(m, chain + [node])
 
     for n in nodes:
-        yield from transverse(n, 0)
+        yield from transverse(n, [])
 
 
-def _breadth_first(nodes: List[TreeNode]) -> Iterator[Tuple[TreeNode, int]]:
-    queue = [(n, 0) for n in nodes]
+def _breadth_first(nodes: List[TreeNode]) -> Iterator[Tuple[TreeNode, List[TreeNode]]]:
+    queue = [(n, []) for n in nodes]
     while queue:
-        node, depth = queue.pop(0)
-        yield node, depth
+        node, chain = queue.pop(0)
+        yield node, chain
         for n in node.children:
-            queue.append((n, depth + 1))
+            queue.append((n, chain + [node]))
 
 
 # Returns ancestors of node, from the oldest to it's parent
