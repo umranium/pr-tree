@@ -13,6 +13,10 @@
 ```bash
 echo "export PATH=PATH:$(pwd)" >> ~/.bash_profile
 ```
+- export your github token
+```bash
+export GITHUB_TOKEN=abc
+```
 
 ### Running
 
