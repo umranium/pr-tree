@@ -73,6 +73,9 @@ class PrInfo:
     def base_branch_name(self) -> str:
         return self._pr.base.ref
 
+    def base_sha(self) -> str:
+        return self._pr.base.sha
+
     def pr_data(self) -> Dict:
         """
         library doesn't support some of the attributes, need to get the data ourselves
@@ -269,11 +272,18 @@ class Print(cli.Application):
 
             line_segments.append(node.head_branch)
             if node.pr_info:
-                local_differs = node.pr_info.head_sha() != get_local_sha(node.pr_info.head_branch_name())
-                if local_differs:
-                    line_segments.append(" 🌓")
+                local_base_differs = node.pr_info.base_sha() != get_local_sha(node.pr_info.base_branch_name())
+                line_segments.append(" ")
+                if local_base_differs:
+                    line_segments.append("🌓")
                 else:
-                    line_segments.append(" 🌕")
+                    line_segments.append("🌕")
+                local_head_differs = node.pr_info.head_sha() != get_local_sha(node.pr_info.head_branch_name())
+                line_segments.append("->")
+                if local_head_differs:
+                    line_segments.append("🌓")
+                else:
+                    line_segments.append("🌕")
                 line_segments.append(" [%d]" % node.pr_info.pr_number())
                 line_segments.append(" ")
                 line_segments.append(",".join("%s:%s" % (rev_state.reviewer, rev_state.to_emoji())
