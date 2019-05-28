@@ -186,19 +186,28 @@ class UpdateDependencies(cli.Application):
                 root_node = node
             if not node.base_node:  # can't rebase root
                 continue
+
             base = node.base_node
-            ancestor_heads = set(a.head_branch for a in ancestry)
-            if self.__root not in ancestor_heads:
+            if self.__root not in set(a.head_branch for a in ancestry):
                 continue
             if self.__delete and base.head_branch == self.__root and base.base_node:
                 base = base.base_node
+
             dependencies.append(node)
+
+            local_base_sha = get_local_sha(base.head_branch)
+            local_head_sha = get_local_sha(node.head_branch)
+            if local_head_sha != node.pr_info.head_sha():
+                raise Exception("Local and remote positions of branch %s differ (%s vs %s)" %
+                                (node.head_branch, local_head_sha, node.pr_info.head_sha()))
+
             step = RebaseStep(base=base,
-                              base_initial_local_sha=get_local_sha(base.head_branch),
+                              base_initial_local_sha=local_base_sha,
                               child=node)
             rebase_steps.append(step)
 
         git = local["git"]
+        bash = local["bash"]
         for step in rebase_steps:
             print("Rebasing", step.child.head_branch,
                   "onto", step.base.head_branch,
@@ -215,6 +224,8 @@ class UpdateDependencies(cli.Application):
                     break
                 except Exception as e:
                     print(e)
+                    print("Rebase failed. Please solve any issues before continuing. exit to continue.")
+                    bash()
 
             git["push", "-f"] & FG
 
