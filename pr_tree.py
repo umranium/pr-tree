@@ -283,13 +283,15 @@ class Print(cli.Application):
 
             line_segments.append(node.head_branch)
             if node.pr_info:
-                local_base_differs = node.pr_info.base_sha() != get_local_sha(node.pr_info.base_branch_name())
+                base_branch = node.pr_info.base_branch_name()
+                head_branch = node.head_branch
+                local_base_differs = node.pr_info.base_sha() != get_merge_base(base_branch, head_branch)
                 line_segments.append(" ")
                 if local_base_differs:
                     line_segments.append("🌓")
                 else:
                     line_segments.append("🌕")
-                local_head_differs = node.pr_info.head_sha() != get_local_sha(node.pr_info.head_branch_name())
+                local_head_differs = node.pr_info.head_sha() != get_local_sha(head_branch)
                 line_segments.append("->")
                 if local_head_differs:
                     line_segments.append("🌓")
@@ -373,6 +375,12 @@ def _breadth_first(nodes: List[TreeNode]) -> Iterator[Tuple[TreeNode, List[TreeN
 def get_local_sha(branch_name: str) -> str:
     git = local["git"]
     result: str = git("rev-parse", branch_name)
+    return result.strip()
+
+
+def get_merge_base(branch1: str, branch2: str) -> str:
+    git = local["git"]
+    result: str = git("merge-base", branch1, branch2)
     return result.strip()
 
 
