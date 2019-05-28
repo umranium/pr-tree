@@ -8,7 +8,7 @@ from typing import Iterator, List, Optional, Tuple, Iterable, Dict
 from github import Repository, PullRequest, Issue, PullRequestReview
 from github.AuthenticatedUser import AuthenticatedUser
 from github.MainClass import Github
-from plumbum import cli, local, FG
+from plumbum import cli, local, FG, ProcessExecutionError
 from plumbum.cli import switch
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
@@ -23,7 +23,7 @@ class RemoteRepo:
 
     def get_user_prs(self, user: AuthenticatedUser) -> List['PrInfo']:
         issues: Iterable[Issue] = github.search_issues(
-            "", type="pr", state="open", author=user.login, repo=self._repo.full_name)
+            "", type="pr", author=user.login, repo=self._repo.full_name)
         pr_numbers: List[int] = [issue.number for issue in issues]
 
         with ThreadPoolExecutor() as executor:
@@ -60,6 +60,9 @@ class PrInfo:
     def __init__(self, repo: RemoteRepo, pr: PullRequest):
         self._repo = repo
         self._pr = pr
+
+    def is_open(self) -> bool:
+        return self._pr.state == "open"
 
     def pr_number(self) -> int:
         return self._pr.number
@@ -251,14 +254,16 @@ class Print(cli.Application):
         print("fetching PRs")
         prs = list(self.__repo.get_user_prs(self.__user))
         roots = create_tree(prs)
+        roots = trim_closed_prs(roots)
 
         print("fetching reviews")
 
         def get_pr_reviewers(pr: PrInfo):
             return pr.pr_number(), pr.reviewer_states(self.__user)
 
+        open_prs = [pr for pr in prs if pr.is_open()]
         with ThreadPoolExecutor() as executor:
-            reviewer_states = {k: v for k, v in executor.map(get_pr_reviewers, prs)}
+            reviewer_states = {k: v for k, v in executor.map(get_pr_reviewers, open_prs)}
         self.__print(roots, reviewer_states)
 
     def __print(self, roots: List[TreeNode], reviewer_states: Dict[int, List[ReviewerState]]):
@@ -285,22 +290,29 @@ class Print(cli.Application):
             if node.pr_info:
                 base_branch = node.pr_info.base_branch_name()
                 head_branch = node.head_branch
-                local_base_differs = node.pr_info.base_sha() != get_merge_base(base_branch, head_branch)
-                line_segments.append(" ")
-                if local_base_differs:
-                    line_segments.append("🌓")
-                else:
-                    line_segments.append("🌕")
-                local_head_differs = node.pr_info.head_sha() != get_local_sha(head_branch)
-                line_segments.append("->")
-                if local_head_differs:
-                    line_segments.append("🌓")
-                else:
-                    line_segments.append("🌕")
+
+                if local_branch_exists(base_branch) and local_branch_exists(head_branch):
+                    local_base_differs = node.pr_info.base_sha() != get_merge_base(base_branch, head_branch)
+                    line_segments.append(" ")
+                    if local_base_differs:
+                        line_segments.append("🌓")
+                    else:
+                        line_segments.append("🌕")
+                    local_head_differs = node.pr_info.head_sha() != get_local_sha(head_branch)
+                    line_segments.append("->")
+                    if local_head_differs:
+                        line_segments.append("🌓")
+                    else:
+                        line_segments.append("🌕")
+
                 line_segments.append(" [%d]" % node.pr_info.pr_number())
                 line_segments.append(" ")
-                line_segments.append(",".join("%s:%s" % (rev_state.reviewer, rev_state.to_emoji())
-                                              for rev_state in reviewer_states[node.pr_info.pr_number()]))
+                if node.pr_info.is_open():
+                    line_segments.append(",".join("%s:%s" % (rev_state.reviewer, rev_state.to_emoji())
+                                                  for rev_state in reviewer_states[node.pr_info.pr_number()]))
+                else:
+                    line_segments.append("closed")
+
             print("".join(line_segments))
 
 
@@ -353,6 +365,25 @@ def create_tree(prs: List[PrInfo]) -> List[TreeNode]:
     return roots
 
 
+def trim_closed_prs(roots: List[TreeNode]) -> List[TreeNode]:
+    new_roots = []
+    for node, parents in reversed(list(_depth_first(roots))):
+        base = node.base_node
+        if base is None:  # don't trim roots
+            new_roots.append(node)
+            continue
+
+        if node.pr_info and node.pr_info.is_open():  # don't trim open prs
+            continue
+        if node.children:  # don't trim if node has untrimmed children
+            continue
+
+        base.children.remove(node)
+        node.base_node = None
+
+    return new_roots
+
+
 def _depth_first(nodes: List[TreeNode]) -> Iterator[Tuple[TreeNode, List[TreeNode]]]:
     def transverse(node: TreeNode, chain: List[TreeNode]) -> Iterator[Tuple[TreeNode, List[TreeNode]]]:
         yield (node, chain)
@@ -382,6 +413,15 @@ def get_merge_base(branch1: str, branch2: str) -> str:
     git = local["git"]
     result: str = git("merge-base", branch1, branch2)
     return result.strip()
+
+
+def local_branch_exists(branch_name: str) -> bool:
+    git = local["git"]
+    try:
+        git("rev-parse", "--verify", branch_name)
+        return True
+    except ProcessExecutionError:
+        return False
 
 
 if __name__ == '__main__':
