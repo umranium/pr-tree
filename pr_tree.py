@@ -219,16 +219,21 @@ class UpdateDependencies(cli.Application):
             if self.__dry_run:
                 continue
 
-            while True:
+            try:
+                git["rebase", "-i",
+                    "--onto", step.base.head_branch,
+                    step.base_initial_local_sha, step.child.head_branch] & FG
+            except ProcessExecutionError as e:
+                print(e)
+                print("Rebase failed.\n"
+                      "Please solve any issues.\n"
+                      "Run `rebase --continue`.\n"
+                      "`exit` to continue.\n"
+                      "`exit -1` to stop.")
                 try:
-                    git["rebase", "-i",
-                        "--onto", step.base.head_branch,
-                        step.base_initial_local_sha, step.child.head_branch] & FG
-                    break
-                except Exception as e:
-                    print(e)
-                    print("Rebase failed. Please solve any issues before continuing. exit to continue.")
-                    bash()
+                    bash & FG
+                except ProcessExecutionError:
+                    pass
 
             git["push", "-f"] & FG
 
