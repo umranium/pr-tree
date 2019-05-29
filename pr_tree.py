@@ -174,6 +174,7 @@ class UpdateDependencies(cli.Application):
         print("fetching PRs")
         prs = list(self.__repo.get_user_prs(self.__user))
         roots = create_tree(prs)
+        roots = trim_closed_prs(roots)
 
         @dataclass()
         class RebaseStep:
@@ -194,9 +195,8 @@ class UpdateDependencies(cli.Application):
             if self.__root not in set(a.head_branch for a in ancestry):
                 continue
             if self.__delete and base.head_branch == self.__root and base.base_node:
+                dependencies.append(node)
                 base = base.base_node
-
-            dependencies.append(node)
 
             local_base_sha = get_local_sha(base.head_branch)
             local_head_sha = get_local_sha(node.head_branch)
