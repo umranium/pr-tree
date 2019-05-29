@@ -10,11 +10,14 @@ from github.AuthenticatedUser import AuthenticatedUser
 from github.MainClass import Github
 from plumbum import cli, local, FG, ProcessExecutionError
 from plumbum.cli import switch
+import plumbum.colors as colors
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 if not GITHUB_TOKEN:
     raise Exception("GitHub token not specified in environment. Please set GITHUB_TOKEN")
 github: Github = Github(GITHUB_TOKEN)
+
+verbose = colors.dim
 
 
 class RemoteRepo:
@@ -171,7 +174,7 @@ class UpdateDependencies(cli.Application):
 
         self.__repo = get_repo(self.__user)
 
-        print("fetching PRs")
+        print(verbose | "fetching PRs")
         prs = list(self.__repo.get_user_prs(self.__user))
         roots = create_tree(prs)
         roots = trim_closed_prs(roots)
@@ -256,12 +259,12 @@ class Print(cli.Application):
 
         self.__repo = get_repo(self.__user)
 
-        print("fetching PRs")
+        print(verbose | "fetching PRs")
         prs = list(self.__repo.get_user_prs(self.__user))
         roots = create_tree(prs)
         roots = trim_closed_prs(roots)
 
-        print("fetching reviews")
+        print(verbose | "fetching reviews")
 
         def get_pr_reviewers(pr: PrInfo):
             return pr.pr_number(), pr.reviewer_states(self.__user)
