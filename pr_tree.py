@@ -3,6 +3,7 @@
 import os
 from concurrent.futures.thread import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from time import sleep
 from typing import Iterator, List, Optional, Tuple, Iterable, Dict
 
 from github import Repository, PullRequest, Issue, PullRequestReview
@@ -16,6 +17,9 @@ GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 if not GITHUB_TOKEN:
     raise Exception("GitHub token not specified in environment. Please set GITHUB_TOKEN")
 github: Github = Github(GITHUB_TOKEN)
+
+git = local["git"]
+bash = local["bash"]
 
 verbose = colors.dim
 branch_color = colors.green
@@ -142,6 +146,14 @@ class TreeNode:
         return index == (sibling_count - 1)
 
 
+@dataclass
+class LocalCommit:
+    sha: str
+
+    def get_message(self) -> str:
+        return git("log", "--format=%B", "-n", 1, self.sha).strip()
+
+
 class PrTree(cli.Application):
     def main(self):
         if not self.nested_command:
@@ -156,12 +168,17 @@ class UpdateDependencies(cli.Application):
     __user: AuthenticatedUser
     __repo: RemoteRepo
     __root: str
-    __dry_run = cli.Flag("--dry-run",
-                         help="Show sequence of steps but do not make any changes")
-    __delete = cli.Flag("--delete",
-                        help="Whether or not to delete the root branch while rebasing. "
-                             "Deleting results in the children rebasing onto the root's parent and not itself. "
-                             "Deleting has no effect if the branch is the root branch (i.e. master). ")
+    __dry_run = \
+        cli.Flag("--dry-run",
+                 help="Show sequence of steps but do not make any changes")
+    __filter_similar_titles = \
+        cli.Flag("--filter-similar-titles",
+                 help="Exclude initial branch commits with similar titles while rebasing")
+    __delete = \
+        cli.Flag("--delete",
+                 help="Whether or not to delete the root branch while rebasing. "
+                      "Deleting results in the children rebasing onto the root's parent and not itself. "
+                      "Deleting has no effect if the branch is the root branch (i.e. master). ")
 
     @switch("--root", str, mandatory=True)
     def root(self, value: str):
@@ -170,7 +187,6 @@ class UpdateDependencies(cli.Application):
         """
         self.__root = value
 
-    # noinspection PyStatementEffect
     def main(self):
         self.__user = github.get_user()
 
@@ -209,17 +225,22 @@ class UpdateDependencies(cli.Application):
                 raise Exception("Local and remote positions of branch %s differ (%s vs %s)" %
                                 (node.head_branch, local_head_sha, node.pr_info.head_sha()))
 
+            initial_local_sha = local_base_sha
+            if self.__filter_similar_titles:
+                filtered_start = filtered_rebase_start_commit(base.head_branch, node.head_branch)
+                if filtered_start:
+                    initial_local_sha = filtered_start
+
             step = RebaseStep(base=base,
-                              base_initial_local_sha=local_base_sha,
+                              base_initial_local_sha=initial_local_sha,
                               child=node)
             rebase_steps.append(step)
 
-        git = local["git"]
-        bash = local["bash"]
         for step in rebase_steps:
             print("Rebasing", branch_color | step.child.head_branch,
                   "onto", branch_color | step.base.head_branch,
                   "starting from", sha_color | step.base_initial_local_sha)
+            sleep(10)
 
             if self.__dry_run:
                 continue
@@ -240,7 +261,9 @@ class UpdateDependencies(cli.Application):
                 except ProcessExecutionError:
                     pass
 
+            # noinspection PyStatementEffect
             git["push", "-f"] & FG
+            print()
 
         if root_node and root_node.base_node and root_node.pr_info and self.__delete:
             print("Remaining tasks:")
@@ -327,7 +350,6 @@ class Print(cli.Application):
 
 
 def get_repo(user: AuthenticatedUser) -> RemoteRepo:
-    git = local["git"]
     origin: str = git("config", "--get", "remote.origin.url")
     origin = origin.strip()
 
@@ -414,24 +436,43 @@ def _breadth_first(nodes: List[TreeNode]) -> Iterator[Tuple[TreeNode, List[TreeN
 
 
 def get_local_sha(branch_name: str) -> str:
-    git = local["git"]
     result: str = git("rev-parse", branch_name)
     return result.strip()
 
 
 def get_merge_base(branch1: str, branch2: str) -> str:
-    git = local["git"]
     result: str = git("merge-base", branch1, branch2)
     return result.strip()
 
 
 def local_branch_exists(branch_name: str) -> bool:
-    git = local["git"]
     try:
         git("rev-parse", "--verify", branch_name)
         return True
     except ProcessExecutionError:
         return False
+
+
+def get_commits(start: str, end: str) -> List[LocalCommit]:
+    return [LocalCommit(sha=commit)
+            for commit in
+            git("log", "--format=format:%H", "%s..%s" % (start, end)).strip().split()]
+
+
+def filtered_rebase_start_commit(base_branch: str, node_branch: str) -> Optional[str]:
+    merge_point = get_merge_base(base_branch, node_branch)
+    base_commits = get_commits(merge_point, base_branch)
+    child_commits = get_commits(merge_point, node_branch)
+    common_commit_indexes = []
+    for base, child in zip(reversed(base_commits), reversed(child_commits)):
+        if base.get_message() == child.get_message():
+            common_commit_indexes.append(child_commits.index(child))
+        else:
+            break
+    if common_commit_indexes:
+        common_commit_indexes = sorted(common_commit_indexes)
+        return child_commits[common_commit_indexes[0]].sha
+    return None
 
 
 if __name__ == '__main__':
