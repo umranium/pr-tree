@@ -18,6 +18,8 @@ if not GITHUB_TOKEN:
 github: Github = Github(GITHUB_TOKEN)
 
 verbose = colors.dim
+branch_color = colors.green
+sha_color = colors.yellow
 
 
 class RemoteRepo:
@@ -215,9 +217,9 @@ class UpdateDependencies(cli.Application):
         git = local["git"]
         bash = local["bash"]
         for step in rebase_steps:
-            print("Rebasing", step.child.head_branch,
-                  "onto", step.base.head_branch,
-                  "starting from", step.base_initial_local_sha)
+            print("Rebasing", branch_color | step.child.head_branch,
+                  "onto", branch_color | step.base.head_branch,
+                  "starting from", sha_color | step.base_initial_local_sha)
 
             if self.__dry_run:
                 continue
@@ -294,7 +296,7 @@ class Print(cli.Application):
             else:
                 line_segments.append("─ ")
 
-            line_segments.append(node.head_branch)
+            line_segments.append(branch_color | node.head_branch)
             if node.pr_info:
                 base_branch = node.pr_info.base_branch_name()
                 head_branch = node.head_branch
