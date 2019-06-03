@@ -240,11 +240,11 @@ class UpdateDependencies(cli.Application):
             print("Rebasing", branch_color | step.child.head_branch,
                   "onto", branch_color | step.base.head_branch,
                   "starting from", sha_color | step.base_initial_local_sha)
-            sleep(10)
 
             if self.__dry_run:
                 continue
 
+            sleep(10)
             try:
                 git["rebase", "-i",
                     "--onto", step.base.head_branch,
