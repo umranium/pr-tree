@@ -32,7 +32,7 @@ class RemoteRepo:
 
     def get_user_prs(self, user: AuthenticatedUser) -> List['PrInfo']:
         issues: Iterable[Issue] = github.search_issues(
-            "", type="pr", author=user.login, repo=self._repo.full_name)
+            "", type="pr", author=user.login, repo=self._repo.full_name, **{'is': 'open'})
         pr_numbers: List[int] = [issue.number for issue in issues]
 
         with ThreadPoolExecutor() as executor:
@@ -352,12 +352,12 @@ class Print(cli.Application):
 def get_repo(user: AuthenticatedUser) -> RemoteRepo:
     origin: str = git("config", "--get", "remote.origin.url")
     origin = origin.strip()
-
-    for repo in user.get_repos():
-        repo: Repository
-        if repo.ssh_url == origin or repo.html_url == origin:
-            return RemoteRepo(repo)
-
+    for org in user.get_orgs():
+        for repo in org.get_repos():
+            repo: Repository
+            print(f'found repo: {repo}')
+            if repo.ssh_url == origin or repo.html_url == origin:
+                return RemoteRepo(repo)
     raise Exception("Unable to find repo for %s in your GitHub account" % origin)
 
 
