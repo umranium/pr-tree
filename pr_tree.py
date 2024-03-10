@@ -8,6 +8,7 @@ from typing import Iterator, List, Optional, Tuple, Iterable, Dict
 
 from github import Repository, PullRequest, Issue, PullRequestReview
 from github.AuthenticatedUser import AuthenticatedUser
+from github.IssueComment import IssueComment
 from github.MainClass import Github
 from plumbum import cli, local, FG, ProcessExecutionError
 from plumbum.cli import switch
@@ -114,6 +115,15 @@ class PrInfo:
             reviewer_states[login] = ReviewerState(reviewer=login, state="PENDING")
 
         return list(reviewer_states.values())
+
+    def title(self):
+        return self._pr.title
+
+    def body(self):
+        return self._pr.body
+
+    def update_body(self, new_body: str):
+        self._pr.edit(body=new_body)
 
     def get_link(self):
         return "https://github.com/%s/%s/pull/%d" % (self._repo.get_owner(), self._repo.get_name(), self.pr_number())
@@ -246,9 +256,11 @@ class UpdateDependencies(cli.Application):
 
             sleep(10)
             try:
-                git["rebase", "-i",
-                    "--onto", step.base.head_branch,
-                    step.base_initial_local_sha, step.child.head_branch] & FG
+                git[  #
+                    "rebase", "-i", "--onto",
+                    step.base.head_branch,
+                    step.base_initial_local_sha,
+                    step.child.head_branch] & FG
             except ProcessExecutionError as e:
                 print(e)
                 print("Rebase failed.\n"
@@ -347,6 +359,92 @@ class Print(cli.Application):
                     line_segments.append("closed")
 
             print("".join(line_segments))
+
+
+@PrTree.subcommand("update-bodies")
+class UpdateBodies(cli.Application):
+    """
+    Updates all the bodies of PRs in a PR-tree, with the current structure of the PR
+    """
+    __user: AuthenticatedUser
+    __repo: RemoteRepo
+    __root: str
+    __dry_run = \
+        cli.Flag("--dry-run",
+                 help="Show sequence of steps but do not make any changes")
+
+    @switch("--root", str, mandatory=True)
+    def root(self, value: str):
+        """
+        The root branch. All branches based on this branch will be rebased recursively.
+        """
+        self.__root = value
+
+    def main(self):
+        self.__user = github.get_user()
+
+        self.__repo = get_repo(self.__user)
+
+        print(verbose | "fetching PRs")
+        prs = list(self.__repo.get_user_prs(self.__user))
+        roots = create_tree(prs)
+        roots = trim_closed_prs(roots)
+        roots = [r for r in roots if r.head_branch == self.__root]
+
+        start_token = '```console\r\nPR Tree:\r\n'
+        end_token = '```'
+
+        def print_tree_desc(base: TreeNode, selected_node: TreeNode):
+            tree_desc: str = ''
+            for n, parentage in _depth_first([base]):
+                line_segments = []
+                for p in parentage:
+                    if p.is_last_sibling():
+                        line_segments.append(" ")
+                    else:
+                        line_segments.append("│")
+                if n == base:
+                    line_segments.append("─")
+                elif n.is_last_sibling():
+                    line_segments.append("└")
+                else:
+                    line_segments.append("├")
+
+                if n.has_children():
+                    line_segments.append("┬ ")
+                else:
+                    line_segments.append("─ ")
+                padding = ''.join(line_segments)
+                is_here = ' <- this PR' if n == selected_node else ''
+                tree_desc += f'{padding}{n.pr_info.title()} [{n.pr_info.pr_number()}]{is_here}\n'
+            return tree_desc
+
+        def add_tree_desc(current_body: str, tree_desc: str):
+            return current_body + '\n' + start_token + '\n' + tree_desc + '\n' + end_token
+
+        def update_tree_desc(current_body: str, tree_desc: str):
+            if current_body is None:
+                return add_tree_desc('', tree_desc)
+            try:
+                start_index = current_body.index(start_token)
+                end_index = current_body.index(end_token, start_index+len(start_token))
+                return current_body[:start_index] + start_token + tree_desc + current_body[end_index:]
+            except ValueError:
+                return add_tree_desc(current_body, tree_desc)
+
+        for root in roots:
+            for base_pr in root.children:
+                for node, _ in _depth_first([base_pr]):
+                    tree_desc = print_tree_desc(base_pr, node)
+                    new_body = update_tree_desc(node.pr_info.body(), tree_desc)
+                    print('For', branch_color | node.head_branch)
+                    print(verbose | 'Updating:' if not self.__dry_run else 'Would have updated:')
+                    print(node.pr_info.body())
+                    print(verbose | 'to:')
+                    print(new_body)
+                    if not self.__dry_run:
+                        node.pr_info.update_body(new_body)
+                    print()
 
 
 def get_repo(user: AuthenticatedUser) -> RemoteRepo:
