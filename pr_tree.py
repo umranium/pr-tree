@@ -6,13 +6,12 @@ from dataclasses import dataclass, field
 from time import sleep
 from typing import Iterator, List, Optional, Tuple, Iterable, Dict
 
+import plumbum.colors as colors
 from github import Repository, PullRequest, Issue, PullRequestReview
 from github.AuthenticatedUser import AuthenticatedUser
-from github.IssueComment import IssueComment
 from github.MainClass import Github
 from plumbum import cli, local, FG, ProcessExecutionError
 from plumbum.cli import switch
-import plumbum.colors as colors
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 if not GITHUB_TOKEN:
@@ -419,31 +418,37 @@ class UpdateBodies(cli.Application):
                 tree_desc += f'{padding}{n.pr_info.title()} [{n.pr_info.pr_number()}]{is_here}\n'
             return tree_desc
 
-        def add_tree_desc(current_body: str, tree_desc: str):
+        def add_tree_desc(current_body: str, tree_desc: str, is_tree: bool) -> str | None:
+            if not is_tree:  # don't add to PRs that are not part of a tree
+                return None
             return current_body + '\n' + start_token + '\n' + tree_desc + '\n' + end_token
 
-        def update_tree_desc(current_body: str, tree_desc: str):
+        def update_tree_desc(current_body: str | None, tree_desc: str, is_tree: bool) -> str | None:
             if current_body is None:
-                return add_tree_desc('', tree_desc)
+                return add_tree_desc('', tree_desc, is_tree)
             try:
                 start_index = current_body.index(start_token)
-                end_index = current_body.index(end_token, start_index+len(start_token))
+                end_index = current_body.index(end_token, start_index + len(start_token))
                 return current_body[:start_index] + start_token + tree_desc + current_body[end_index:]
-            except ValueError:
-                return add_tree_desc(current_body, tree_desc)
+            except ValueError:  # unable to find start and end tokens
+                return add_tree_desc(current_body, tree_desc, is_tree)
 
         for root in roots:
             for base_pr in root.children:
+                is_tree = len(base_pr.children) > 0
                 for node, _ in _depth_first([base_pr]):
                     tree_desc = print_tree_desc(base_pr, node)
-                    new_body = update_tree_desc(node.pr_info.body(), tree_desc)
+                    new_body = update_tree_desc(node.pr_info.body(), tree_desc, is_tree)
                     print('For', branch_color | node.head_branch)
-                    print(verbose | 'Updating:' if not self.__dry_run else 'Would have updated:')
-                    print(node.pr_info.body())
-                    print(verbose | 'to:')
-                    print(new_body)
-                    if not self.__dry_run:
-                        node.pr_info.update_body(new_body)
+                    if new_body:
+                        print(verbose | 'Updating:' if not self.__dry_run else 'Would have updated:')
+                        print(node.pr_info.body())
+                        print(verbose | 'to:')
+                        print(new_body)
+                        if not self.__dry_run:
+                            node.pr_info.update_body(new_body)
+                    else:
+                        print(verbose | 'Not updating.' if not self.__dry_run else 'Would not have updated.')
                     print()
 
 
