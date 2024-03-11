@@ -341,7 +341,8 @@ class ForcePush(cli.Application):
 
         print('Pushing:')
         for i, step in enumerate(steps):
-            print(i, step.branch_name, 'local:', step.local_sha, 'remote:', step.remote_sha)
+            print(i, branch_color | step.branch_name, 'local:', sha_color | step.local_sha, 'remote:',
+                  sha_color | step.remote_sha)
 
         if self.__dry_run:
             return
@@ -350,8 +351,8 @@ class ForcePush(cli.Application):
         git['push', '-f', '--atomic', remote, *[s.branch_name for s in steps]] & FG
 
 
-@PrTree.subcommand("print")
-class Print(cli.Application):
+@PrTree.subcommand("print-prs")
+class PrintPrs(cli.Application):
     """
     Prints the user's PRs in the form of a tree, where each node is placed below it's base branch
     """
