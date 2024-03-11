@@ -222,7 +222,7 @@ class UpdateDependencies(cli.Application):
                 continue
 
             base = node.base_node
-            if self.__root not in set(a.head_branch for a in ancestry):
+            if self.__root not in set(a.head_branch for a in ancestry):  # skip trees not including the root node
                 continue
             if self.__delete and base.head_branch == self.__root and base.base_node:
                 dependencies.append(node)
@@ -272,14 +272,82 @@ class UpdateDependencies(cli.Application):
                 except ProcessExecutionError:
                     pass
 
-            # noinspection PyStatementEffect
-            git["push", "-f"] & FG
             print()
 
         if root_node and root_node.base_node and root_node.pr_info and self.__delete:
             print("Remaining tasks:")
             for dep in dependencies:
                 print("Change the base of PR", dep.pr_info.get_link(), "to", root_node.base_node.head_branch)
+
+
+@PrTree.subcommand("force-push")
+class ForcePush(cli.Application):
+    """
+    Updates all the dependent PRs of a PR by recursively rebasing them
+    """
+    __user: AuthenticatedUser
+    __repo: RemoteRepo
+    __root: str
+    __dry_run = \
+        cli.Flag("--dry-run",
+                 help="Show sequence of steps but do not make any changes")
+
+    @switch("--root", str, mandatory=True)
+    def root(self, value: str):
+        """
+        The root branch. All branches based on this branch will be rebased recursively.
+        """
+        self.__root = value
+
+    def main(self):
+        self.__user = github.get_user()
+        self.__repo = get_repo(self.__user)
+
+        remotes = get_remotes()
+        if len(remotes) != 1:
+            print(f'Only working with 1 remote is supported! Found {len(remotes)} remotes: {remotes}')
+            return
+        remote = remotes[0]
+
+        print(verbose | "fetching PRs")
+        prs = list(self.__repo.get_user_prs(self.__user))
+        roots = create_tree(prs)
+        roots = trim_closed_prs(roots)
+
+        @dataclass
+        class PushStep:
+            branch_name: str
+            local_sha: str
+            remote_sha: str
+
+        steps: List[PushStep] = []
+        for node, ancestry in _depth_first(roots):
+            if self.__root not in set(a.head_branch for a in ancestry):  # skip nodes not including the selected root
+                continue
+            if not node.pr_info:  # branches (e.g. master) that don't have PRs created
+                continue
+            step = PushStep(
+                branch_name=node.head_branch,
+                local_sha=get_local_sha(node.head_branch),
+                remote_sha=node.pr_info.head_sha()
+            )
+            if step.local_sha == step.remote_sha:  # local and remote branches match
+                continue
+            steps.append(step)
+
+        if not steps:
+            print('No branches need to be pushed')
+            return
+
+        print('Pushing:')
+        for i, step in enumerate(steps):
+            print(i, step.branch_name, 'local:', step.local_sha, 'remote:', step.remote_sha)
+
+        if self.__dry_run:
+            return
+
+        # noinspection PyStatementEffect
+        git['push', '-f', '--atomic', remote, *[s.branch_name for s in steps]] & FG
 
 
 @PrTree.subcommand("print")
@@ -541,6 +609,11 @@ def _breadth_first(nodes: List[TreeNode]) -> Iterator[Tuple[TreeNode, List[TreeN
 def get_local_sha(branch_name: str) -> str:
     result: str = git("rev-parse", branch_name)
     return result.strip()
+
+
+def get_remotes() -> List[str]:
+    results: str = git("remote")
+    return [r.strip() for r in results.split('\n') if len(r.strip()) > 0]
 
 
 def get_merge_base(branch1: str, branch2: str) -> str:
